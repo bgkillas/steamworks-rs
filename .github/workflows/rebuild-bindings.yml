@@ -13,7 +13,7 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        os: [windows-latest, ubuntu-latest, macos-latest, ubuntu-22.04-arm]
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -50,6 +50,12 @@ jobs:
           name: artifact-linux-bindings
           path: steamworks-sys/src/linux_bindings.rs
         if: matrix.os == 'ubuntu-latest'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifact-linux-arm-bindings
+          path: steamworks-sys/src/linuxarm_bindings.rs
+        if: matrix.os == 'ubuntu-22.04-arm'
 
       - uses: actions/upload-artifact@v4
         with:
