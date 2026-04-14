@@ -29,6 +29,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if triple.contains("linux") {
         if triple.contains("i686") {
             link_path.push("linux32");
+        } else if triple.contains("aarch64") {
+            link_path.push("linuxarm64");
         } else {
             link_path.push("linux64");
         }
