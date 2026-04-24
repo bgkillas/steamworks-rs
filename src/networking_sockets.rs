@@ -906,7 +906,6 @@ impl NetConnection {
     /// Internal function used by `receive_messages` and `receive_messages_noalloc`.
     fn receive_messages_internal(&mut self, batch_size: usize) -> Result<usize, InvalidHandle> {
         debug_assert!(self.message_buffer.capacity() >= batch_size);
-        self.message_buffer.clear();
         let message_count = unsafe {
             sys::SteamAPI_ISteamNetworkingSockets_ReceiveMessagesOnConnection(
                 self.sockets,
@@ -939,6 +938,7 @@ impl NetConnection {
         &mut self,
         batch_size: usize,
     ) -> Result<Vec<NetworkingMessage>, InvalidHandle> {
+        self.message_buffer.clear();
         if self.message_buffer.capacity() < batch_size {
             // reserve(additional) ensures capacity >= len + additional.
             // Since the buffer is always drained between calls, len == 0,
@@ -964,6 +964,7 @@ impl NetConnection {
         dest: &mut Vec<NetworkingMessage>,
         batch_size: usize,
     ) -> Result<(), InvalidHandle> {
+        self.message_buffer.clear();
         if self.message_buffer.capacity() < batch_size {
             // reserve(additional) ensures capacity >= len + additional.
             // Since the buffer is always drained between calls, len == 0,
@@ -990,6 +991,7 @@ impl NetConnection {
     ///
     /// All messages available in the queue will always be received in one call and you don't have to worry about batch size.
     pub fn receive_messages_with(&mut self, mut f: impl FnMut(NetworkingMessage)) {
+        self.message_buffer.clear();
         const MIN_CAPACITY: usize = 32;
         let mut cap = self.message_buffer.capacity();
         if cap < MIN_CAPACITY {
@@ -1108,7 +1110,30 @@ unsafe impl Send for NetPollGroup {}
 unsafe impl Sync for NetPollGroup {}
 
 impl NetPollGroup {
-    pub fn receive_messages(&mut self, batch_size: usize) -> Vec<NetworkingMessage> {
+    fn receive_messages_internal(&mut self, batch_size: usize) -> Result<usize, InvalidHandle> {
+        debug_assert!(self.message_buffer.capacity() >= batch_size);
+        let message_count = unsafe {
+            sys::SteamAPI_ISteamNetworkingSockets_ReceiveMessagesOnConnection(
+                self.sockets,
+                self.handle,
+                self.message_buffer.as_mut_ptr(),
+                batch_size as _,
+            )
+        };
+        if message_count < 0 {
+            return Err(InvalidHandle);
+        }
+        unsafe {
+            self.message_buffer.set_len(message_count as usize);
+        }
+        Ok(message_count as usize)
+    }
+
+    pub fn receive_messages(
+        &mut self,
+        batch_size: usize,
+    ) -> Result<Vec<NetworkingMessage>, InvalidHandle> {
+        self.message_buffer.clear();
         if self.message_buffer.capacity() < batch_size {
             // reserve(additional) ensures capacity >= len + additional.
             // Since the buffer is always drained between calls, len == 0,
@@ -1116,23 +1141,68 @@ impl NetPollGroup {
             self.message_buffer.reserve(batch_size);
         }
 
-        unsafe {
-            let count = sys::SteamAPI_ISteamNetworkingSockets_ReceiveMessagesOnPollGroup(
-                self.sockets,
-                self.handle,
-                self.message_buffer.as_mut_ptr(),
-                batch_size as _,
-            ) as usize;
-            self.message_buffer.set_len(count);
-        }
+        self.receive_messages_internal(batch_size)?;
 
-        self.message_buffer
+        Ok(self
+            .message_buffer
             .drain(..)
             .map(|x| NetworkingMessage {
                 message: x,
                 _inner: self.inner.clone(),
             })
-            .collect()
+            .collect())
+    }
+
+    pub fn receive_messages_into(
+        &mut self,
+        dest: &mut Vec<NetworkingMessage>,
+        batch_size: usize,
+    ) -> Result<(), InvalidHandle> {
+        self.message_buffer.clear();
+        if self.message_buffer.capacity() < batch_size {
+            // reserve(additional) ensures capacity >= len + additional.
+            // Since the buffer is always drained between calls, len == 0,
+            // so reserve(batch_size) guarantees capacity >= batch_size.
+            self.message_buffer.reserve(batch_size);
+        }
+
+        self.receive_messages_internal(batch_size)?;
+
+        dest.reserve_exact(batch_size);
+        for message in self.message_buffer.drain(..) {
+            dest.push(NetworkingMessage {
+                message,
+                _inner: self.inner.clone(),
+            });
+        }
+
+        Ok(())
+    }
+
+    pub fn receive_messages_with(&mut self, mut f: impl FnMut(NetworkingMessage)) {
+        self.message_buffer.clear();
+        const MIN_CAPACITY: usize = 32;
+        let mut cap = self.message_buffer.capacity();
+        if cap < MIN_CAPACITY {
+            self.message_buffer.reserve_exact(MIN_CAPACITY - cap);
+            cap = self.message_buffer.capacity();
+        }
+
+        loop {
+            let Ok(message_count) = self.receive_messages_internal(cap) else {
+                return;
+            };
+
+            for msg in self.message_buffer.drain(..) {
+                f(NetworkingMessage {
+                    message: msg,
+                    _inner: self.inner.clone(),
+                })
+            }
+            if message_count < cap {
+                break;
+            }
+        }
     }
 }
 
